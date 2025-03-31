@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"reflect"
+	"sync"
 	"time"
 )
 
@@ -202,8 +203,9 @@ type Map struct {
 
 	reflectTypeToType map[reflect.Type]*Type
 
-	memoizedScanPlans   map[uint32]map[reflect.Type][2]ScanPlan
-	memoizedEncodePlans map[uint32]map[reflect.Type][2]EncodePlan
+	memoizedScanPlans     map[uint32]map[reflect.Type][2]ScanPlan
+	memoizedEncodePlans   map[uint32]map[reflect.Type][2]EncodePlan
+	memoizedEncodePlansMu sync.RWMutex
 
 	// TryWrapEncodePlanFuncs is a slice of functions that will wrap a value that cannot be encoded by the Codec. Every
 	// time a wrapper is found the PlanEncode method will be recursively called with the new value. This allows several layers of wrappers
@@ -1221,10 +1223,14 @@ func (m *Map) planEncodeDepth(oid uint32, format int16, value any, depth int) En
 		return nil
 	}
 
+	m.memoizedEncodePlansMu.RLock()
 	oidMemo := m.memoizedEncodePlans[oid]
+	m.memoizedEncodePlansMu.RUnlock()
 	if oidMemo == nil {
 		oidMemo = make(map[reflect.Type][2]EncodePlan)
+		m.memoizedEncodePlansMu.Lock()
 		m.memoizedEncodePlans[oid] = oidMemo
+		m.memoizedEncodePlansMu.Unlock()
 	}
 	targetReflectType := reflect.TypeOf(value)
 	typeMemo := oidMemo[targetReflectType]
@@ -1232,7 +1238,9 @@ func (m *Map) planEncodeDepth(oid uint32, format int16, value any, depth int) En
 	if plan == nil {
 		plan = m.planEncode(oid, format, value, depth)
 		typeMemo[format] = plan
+		m.memoizedEncodePlansMu.Lock()
 		oidMemo[targetReflectType] = typeMemo
+		m.memoizedEncodePlansMu.Unlock()
 	}
 
 	return plan
